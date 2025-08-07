@@ -27,7 +27,8 @@ class PythonDocstringExtractor(DocstringExtractor):
         Returns:
             List[Docstring]: A list of extracted docstrings.
         """
-        tree = self.parser.parse(code.encode("utf8"))
+        byte_code = code.encode("utf8")
+        tree = self.parser.parse(byte_code)
         root_node = tree.root_node
         docstrings: List[Docstring] = []
 
@@ -44,16 +45,16 @@ class PythonDocstringExtractor(DocstringExtractor):
                     for block_child in child.children:
                         if is_docstring_node(block_child):
                             string_node = block_child.children[0]
-                            return code.encode("utf8")[string_node.start_byte:string_node.end_byte].decode("utf8").strip()
+                            return byte_code[string_node.start_byte:string_node.end_byte].decode("utf8").strip()
                 elif is_docstring_node(child):
                     string_node = child.children[0]
-                    return code.encode("utf8")[string_node.start_byte:string_node.end_byte].decode("utf8").strip()
+                    return byte_code[string_node.start_byte:string_node.end_byte].decode("utf8").strip()
             return None
 
         def get_identifier(node):
-            for child in node.children:
-                if child.type == "identifier":
-                    return code[child.start_byte:child.end_byte]
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                return byte_code[name_node.start_byte:name_node.end_byte].decode("utf8").strip()
             return "<unknown>"
 
         def traverse(node, parent_stack=None):
@@ -83,3 +84,59 @@ class PythonDocstringExtractor(DocstringExtractor):
 
         traverse(root_node)
         return docstrings
+
+    def extract_used_symbols(self, code: str) -> List[Symbol]:
+        """
+        Extracts symbol usage from a Python source string.
+
+        This method identifies function and class symbols that are *called* within the source code,
+        returning them as `Symbol` objects with name, parent (if applicable), and type inferred
+        from syntax or casing.
+
+        Args:
+            code (str): The Python source code to analyze.
+
+        Returns:
+            List[Symbol]: A list of function/class symbols used in the code.
+        """
+        tree = self.parser.parse(code.encode("utf8"))
+        root = tree.root_node
+        used: List[Symbol] = []
+
+        def get_node_text(node):
+            return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
+
+        def walk(node):
+            if node.type == "call":
+                fn_node = node.child_by_field_name("function")
+
+                if fn_node is None:
+                    return
+
+                if fn_node.type == "attribute":
+                    object_node = fn_node.child_by_field_name("object")
+                    method_node = fn_node.child_by_field_name("attribute")
+
+                    if object_node and method_node:
+                        parent = get_node_text(object_node)
+                        name = get_node_text(method_node)
+                        used.append(Symbol(
+                            name=name,
+                            parent=parent,
+                            type="function"
+                        ))
+
+                elif fn_node.type == "identifier":
+                    name = get_node_text(fn_node)
+                    symbol_type = "class" if name and name[0].isupper() else "function"
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type=symbol_type
+                    ))
+
+            for child in node.children:
+                walk(child)
+
+        walk(root)
+        return used
