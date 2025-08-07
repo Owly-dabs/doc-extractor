@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List, Dict, Union
 from extractor.base import DocstringExtractor
 from logger import logger 
-from datamodels import Docstring
+from datamodels import Docstring, Symbol
 
 
 def collect_all_docstrings_in_project(
@@ -99,9 +99,8 @@ def save_docstrings_to_json(
     logger.info(f"Saved {len(docstrings)} docstrings to {output_path}")
 
 
-## TODO: Needs to be changed to accept Symbol type
 def save_symbols_to_json(
-    symbols: List[Dict],
+    symbols: List[Symbol],
     output_path: Union[str, Path]
 ):
     """
@@ -114,5 +113,7 @@ def save_symbols_to_json(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)  # Create parent directories if needed
 
-    output_path.write_text(json.dumps(symbols, indent=2), encoding="utf8")
+    json_data = [symbol.model_dump() for symbol in symbols]
+    output_path.write_text(json.dumps(json_data, indent=2), encoding="utf8")
+    
     logger.info(f"Saved {len(symbols)} symbols to {output_path}")
