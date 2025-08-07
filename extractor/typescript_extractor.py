@@ -2,9 +2,15 @@ from tree_sitter_languages import get_parser
 from pathlib import Path
 from typing import List, Dict
 from .base import DocstringExtractor
+from datamodels import Docstring
 
 
 class TypeScriptDocstringExtractor(DocstringExtractor):
+    """
+    Extracts docstrings from TypeScript source code using Tree-sitter.
+    Supports class, interface, function, variable, and property-level doc comments.
+    """
+
     def __init__(self):
         self._parser = get_parser("typescript")
 
@@ -16,18 +22,29 @@ class TypeScriptDocstringExtractor(DocstringExtractor):
     def suffix(self) -> list[str]:
         return [".ts", ".tsx"]
 
-    def extract_docstrings(self, code: str) -> List[Dict]:
+    def extract_docstrings(self, code: str) -> List[Docstring]:
+        """
+        Extracts JSDoc-style and `//` docstrings from a TypeScript code snippet.
+
+        This method walks the TypeScript AST, collecting leading comments from functions,
+        classes, interfaces, arrow functions, and exported members. It converts these into
+        structured `Docstring` objects.
+
+        Args:
+            code (str): The TypeScript source code.
+
+        Returns:
+            List[Docstring]: A list of structured docstring objects extracted from the code.
+        """
         tree = self.parser.parse(code.encode("utf8"))
         root_node = tree.root_node
-        docstrings = []
+        docstrings: List[Docstring] = []
         exported_identifiers = set()
 
         def get_node_text(node):
             return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
 
         def extract_leading_doc_comment(node):
-            """Extract /** */ or grouped // comments before node or its parent (handles export wrappers)."""
-            
             def find_leading_comment_among_siblings(target_node):
                 if not hasattr(target_node, "parent") or target_node.parent is None:
                     return None
@@ -42,27 +59,24 @@ class TypeScriptDocstringExtractor(DocstringExtractor):
 
                     if prev.type == "comment":
                         if text.startswith("/**"):
-                            return text  # Prefer JSDoc-style block comment
+                            return text
                         elif text.startswith("//"):
                             collected.insert(0, text)
                         else:
-                            break  # Unrecognized comment style — stop
+                            break
                     elif prev.type in [";", "}"]:
-                        continue  # Skip over syntax tokens
+                        continue
                     else:
-                        break  # Stop if non-comment sibling encountered
+                        break
 
                 if collected:
                     return "\n".join(collected)
-
                 return None
 
-            # First try node's siblings
             comment = find_leading_comment_among_siblings(node)
             if comment:
                 return comment
 
-            # If node is nested in export or declaration wrapper, try parent's siblings
             parent = node.parent
             while parent is not None and parent.type in ["export_statement", "lexical_declaration"]:
                 comment = find_leading_comment_among_siblings(parent)
@@ -94,20 +108,22 @@ class TypeScriptDocstringExtractor(DocstringExtractor):
             for declarator in node.children:
                 if declarator.type != "variable_declarator":
                     continue
+
                 identifier_node = next((c for c in declarator.children if c.type == "identifier"), None)
                 value_node = next((c for c in declarator.children if c.type in ["arrow_function", "function", "function_expression"]), None)
+
                 if identifier_node and value_node:
                     identifier_name = get_node_text(identifier_node)
                     if identifier_name not in exported_identifiers:
                         continue
                     doc = extract_leading_doc_comment(declarator)
                     if doc:
-                        results.append({
-                            "name": identifier_name,
-                            "type": "arrow function" if value_node.type == "arrow_function" else "function expression",
-                            "parent": parent_stack[-1] if parent_stack else None,
-                            "docstring": doc
-                        })
+                        results.append(Docstring(
+                            name=identifier_name,
+                            type="arrow function" if value_node.type == "arrow_function" else "function expression",
+                            parent=parent_stack[-1] if parent_stack else None,
+                            docstring=doc
+                        ))
             return results
 
         def traverse(node, parent_stack=None):
@@ -126,25 +142,25 @@ class TypeScriptDocstringExtractor(DocstringExtractor):
                 doc = extract_leading_doc_comment(node)
                 name = get_node_name(node)
                 if doc:
-                    docstrings.append({
-                        "name": name,
-                        "type": node.type.replace("_", " "),
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": doc
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        type=node.type.replace("_", " "),
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
                 if is_parent_scope:
                     parent_stack.append(name)
-                    
-            elif node.type == "property_signature" or node.type == "public_field_definition":
+
+            elif node.type in ["property_signature", "public_field_definition"]:
                 doc = extract_leading_doc_comment(node)
                 name = get_node_name(node)
                 if doc:
-                    docstrings.append({
-                        "name": name,
-                        "type": "property",
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": doc
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        type="property",
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
 
             elif node.type == "variable_declaration":
                 docstrings.extend(extract_variable_function_doc(node, parent_stack))
@@ -153,9 +169,8 @@ class TypeScriptDocstringExtractor(DocstringExtractor):
                 collect_exported_identifiers(node)
                 for child in node.children:
                     traverse(child, parent_stack)
-                return  # export_statement is just a wrapper, don't recurse again at the end
+                return
 
-            # Recurse into children
             for child in node.children:
                 traverse(child, parent_stack)
 

@@ -1,9 +1,15 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
+from datamodels import Docstring
 
 
 class CppDocstringExtractor(DocstringExtractor):
+    """
+    Extracts Doxygen-style documentation comments from C++ source code using Tree-sitter.
+    Supports functions, fields, classes, structs, and declarations.
+    """
+
     def __init__(self):
         self._parser = get_parser("cpp")
 
@@ -15,16 +21,29 @@ class CppDocstringExtractor(DocstringExtractor):
     def suffix(self) -> list[str]:
         return [".cpp", ".hpp", ".cc", ".hh"]
 
-    def extract_docstrings(self, code: str) -> List[Dict]:
+    def extract_docstrings(self, code: str) -> List[Docstring]:
+        """
+        Extracts Doxygen-style (`/** ... */`, `/*! ... */`) or grouped `//`/`///` comments
+        from C++ source code.
+
+        Parses the syntax tree and extracts comments above:
+        - function definitions
+        - declarations
+        - class/struct definitions
+        - field declarations
+
+        Returns:
+            List[Docstring]: A list of structured docstring objects.
+        """
         tree = self.parser.parse(code.encode("utf8"))
         root_node = tree.root_node
-        docstrings = []
+        docstrings: List[Docstring] = []
 
         def get_node_text(node):
             return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
 
         def extract_leading_doc_comment(node):
-            """Extract /** */, ///, or grouped // comments directly above the node."""
+            """Extract /** */, /*! */, ///, or grouped // comments directly above the node."""
             if not hasattr(node, "parent") or node.parent is None:
                 return None
 
@@ -38,15 +57,15 @@ class CppDocstringExtractor(DocstringExtractor):
 
                 if prev.type == "comment":
                     if text.startswith("/**") or text.startswith("/*!"):
-                        return text  # Prefer block-style doc
+                        return text
                     elif text.startswith("//"):
                         collected.insert(0, text)
                     else:
                         break
                 elif prev.type in [";", "}"]:
-                    continue  # skip syntactic tokens
+                    continue
                 else:
-                    break  # stop if we hit non-comment node
+                    break
 
             if collected:
                 return "\n".join(collected)
@@ -54,8 +73,8 @@ class CppDocstringExtractor(DocstringExtractor):
             return None
 
         def get_node_name(node):
-            """Recursively find the first identifier in a node's subtree."""
-            if node.type == "identifier" or node.type == "field_identifier" or node.type == "type_identifier":
+            """Recursively find the first identifier-like name in a node's subtree."""
+            if node.type in ["identifier", "field_identifier", "type_identifier"]:
                 return get_node_text(node)
 
             for child in node.children:
@@ -81,12 +100,12 @@ class CppDocstringExtractor(DocstringExtractor):
                 doc = extract_leading_doc_comment(node)
                 name = get_node_name(node)
                 if doc:
-                    docstrings.append({
-                        "name": name,
-                        "type": node.type.replace("_", " "),
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": doc
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        type=node.type.replace("_", " "),
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
 
                 if is_parent_scope:
                     parent_stack.append(name)

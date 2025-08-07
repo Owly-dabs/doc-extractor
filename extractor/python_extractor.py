@@ -2,6 +2,7 @@ from tree_sitter_languages import get_parser
 from pathlib import Path
 from typing import List, Dict
 from .base import DocstringExtractor
+from datamodels import Docstring, Symbol
 
 
 class PythonDocstringExtractor(DocstringExtractor):
@@ -12,10 +13,23 @@ class PythonDocstringExtractor(DocstringExtractor):
     def suffix(self) -> list[str]:
         return [".py"]
 
-    def extract_docstrings(self, code: str) -> List[Dict]:
+    def extract_docstrings(self, code: str) -> List[Docstring]:
+        """
+        Extracts docstrings from a Python source string.
+
+        This method parses the source code using Tree-sitter and traverses the AST to extract
+        docstrings from module, class, and function definitions. Each docstring is returned as
+        a `Docstring` object with metadata about its symbol.
+
+        Args:
+            code (str): The Python source code to analyze.
+
+        Returns:
+            List[Docstring]: A list of extracted docstrings.
+        """
         tree = self.parser.parse(code.encode("utf8"))
         root_node = tree.root_node
-        docstrings = []
+        docstrings: List[Docstring] = []
 
         def is_docstring_node(node):
             return (
@@ -25,7 +39,6 @@ class PythonDocstringExtractor(DocstringExtractor):
             )
 
         def extract_from_parent(node):
-            """Extracts a docstring from inside a block or module"""
             for child in node.children:
                 if child.type == "block":
                     for block_child in child.children:
@@ -52,14 +65,13 @@ class PythonDocstringExtractor(DocstringExtractor):
                 name = "<module>" if node.type == "module" else get_identifier(node)
 
                 if docstring:
-                    docstrings.append({
-                        "name": name,
-                        "type": node.type.replace("_definition", ""),
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": docstring
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        parent=parent_stack[-1] if parent_stack else None,
+                        type=node.type.replace("_definition", ""),
+                        docstring=docstring
+                    ))
 
-                # Push current node's name to parent stack (if not module)
                 if node.type != "module":
                     parent_stack.append(name)
 

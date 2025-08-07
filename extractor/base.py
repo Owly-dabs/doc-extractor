@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from datamodels import Docstring
 
 class DocstringExtractor(ABC):
     @property
@@ -8,6 +9,6 @@ class DocstringExtractor(ABC):
         pass
     
     @abstractmethod
-    def extract_docstrings(self, code: str) -> list[dict]:
+    def extract_docstrings(self, code: str) -> list[Docstring]:
         """Extract docstrings from a single file"""
         pass

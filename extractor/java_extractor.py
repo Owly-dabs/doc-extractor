@@ -1,9 +1,15 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
+from datamodels import Docstring
 
 
 class JavaDocstringExtractor(DocstringExtractor):
+    """
+    Extracts Javadoc and line comments from Java source code using Tree-sitter.
+    Supports class, interface, method, constructor, and field documentation.
+    """
+
     def __init__(self):
         self._parser = get_parser("java")
 
@@ -15,10 +21,22 @@ class JavaDocstringExtractor(DocstringExtractor):
     def suffix(self) -> list[str]:
         return [".java"]
 
-    def extract_docstrings(self, code: str) -> List[Dict]:
+    def extract_docstrings(self, code: str) -> List[Docstring]:
+        """
+        Extracts Javadoc (`/** ... */`) and grouped line comments (`//`) from Java code.
+
+        This method walks the Java AST and collects documentation comments
+        preceding class, interface, method, field, and constructor declarations.
+
+        Args:
+            code (str): The Java source code as a string.
+
+        Returns:
+            List[Docstring]: A list of extracted docstrings in structured form.
+        """
         tree = self.parser.parse(code.encode("utf8"))
         root_node = tree.root_node
-        docstrings = []
+        docstrings: List[Docstring] = []
 
         def get_node_text(node):
             return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
@@ -37,18 +55,18 @@ class JavaDocstringExtractor(DocstringExtractor):
 
                 if prev.type == "block_comment":
                     if text.startswith("/**"):
-                        return text  # Prefer Javadoc-style block
+                        return text  # Javadoc block
                     elif text.startswith("/*"):
-                        break  # Ignore non-doc block comment
+                        break  # Non-doc block comment — skip
                 elif prev.type == "line_comment":
                     if text.startswith("//"):
                         collected.insert(0, text)
                     else:
                         break
                 elif prev.type in [";", "modifiers"]:
-                    continue  # skip syntactic clutter
+                    continue
                 else:
-                    break  # stop at unrelated nodes
+                    break
 
             if collected:
                 return "\n".join(collected)
@@ -82,12 +100,12 @@ class JavaDocstringExtractor(DocstringExtractor):
                 doc = extract_leading_doc_comment(node)
                 name = get_node_name(node)
                 if doc:
-                    docstrings.append({
-                        "name": name,
-                        "type": node.type.replace("_", " "),
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": doc
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        type=node.type.replace("_", " "),
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
                 if is_scope:
                     parent_stack.append(name)
 

@@ -1,9 +1,14 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
+from datamodels import Docstring
 
 
 class JavaScriptDocstringExtractor(DocstringExtractor):
+    """
+    Extracts documentation comments from JavaScript source code using Tree-sitter.
+    """
+
     def __init__(self):
         self._parser = get_parser("javascript")
 
@@ -15,29 +20,43 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
     def suffix(self) -> list[str]:
         return [".js", ".jsx"]
 
-    def extract_docstrings(self, code: str) -> List[Dict]:
+    def extract_docstrings(self, code: str) -> List[Docstring]:
+        """
+        Extracts JSDoc-style (`/** ... */`) and grouped `//` comments from JavaScript code.
+
+        This method parses the source into an AST and extracts documentation for:
+        - Function declarations
+        - Method definitions
+        - Class declarations
+        - Exported arrow and function expressions
+        - Variable declarations with functions
+
+        Returns:
+            List[Docstring]: A list of structured docstring records.
+        """
         tree = self.parser.parse(code.encode("utf8"))
         root_node = tree.root_node
-        docstrings = []
+        docstrings: List[Docstring] = []
         exported_identifiers = set()
 
         def get_node_text(node):
             return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
 
         def extract_leading_doc_comment(node):
-            """Look backward for /** ... */ or grouped // comments before the node or its parent."""
             def find_leading_comment_among_siblings(target_node):
                 if not hasattr(target_node, "parent") or target_node.parent is None:
                     return None
+
                 siblings = target_node.parent.children
                 idx = siblings.index(target_node)
                 collected = []
+
                 for i in reversed(range(0, idx)):
                     prev = siblings[i]
                     text = get_node_text(prev)
                     if prev.type == "comment":
                         if text.startswith("/**"):
-                            return text  # block doc
+                            return text
                         elif text.startswith("//"):
                             collected.insert(0, text)
                         else:
@@ -46,14 +65,13 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
                         continue
                     else:
                         break
+
                 return "\n".join(collected) if collected else None
 
-            # Try immediate siblings
             comment = find_leading_comment_among_siblings(node)
             if comment:
                 return comment
 
-            # Try parents (e.g., export_statement wrapper)
             parent = node.parent
             while parent is not None and parent.type in ["export_statement", "lexical_declaration"]:
                 comment = find_leading_comment_among_siblings(parent)
@@ -64,7 +82,6 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
             return None
 
         def get_node_name(node):
-            """Recursively search for identifier."""
             if node.type in ["identifier", "type_identifier", "property_identifier"]:
                 return get_node_text(node)
             for child in node.children:
@@ -74,7 +91,6 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
             return "<anonymous>"
 
         def collect_exported_identifiers(node):
-            """Collect identifiers in export { foo, bar } statements."""
             if node.type == "export_statement":
                 for child in node.children:
                     if child.type == "export_clause":
@@ -98,12 +114,12 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
 
                     doc = extract_leading_doc_comment(declarator)
                     if doc:
-                        results.append({
-                            "name": identifier_name,
-                            "type": "arrow function" if value_node.type == "arrow_function" else "function expression",
-                            "parent": parent_stack[-1] if parent_stack else None,
-                            "docstring": doc
-                        })
+                        results.append(Docstring(
+                            name=identifier_name,
+                            type="arrow function" if value_node.type == "arrow_function" else "function expression",
+                            parent=parent_stack[-1] if parent_stack else None,
+                            docstring=doc
+                        ))
             return results
 
         def traverse(node, parent_stack=None):
@@ -116,12 +132,12 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
                 doc = extract_leading_doc_comment(node)
                 name = get_node_name(node)
                 if doc:
-                    docstrings.append({
-                        "name": name,
-                        "type": node.type.replace("_", " "),
-                        "parent": parent_stack[-1] if parent_stack else None,
-                        "docstring": doc
-                    })
+                    docstrings.append(Docstring(
+                        name=name,
+                        type=node.type.replace("_", " "),
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
                 if is_scope:
                     parent_stack.append(name)
 
@@ -134,7 +150,6 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
                     traverse(child, parent_stack)
                 return
 
-            # Recurse
             for child in node.children:
                 traverse(child, parent_stack)
 
