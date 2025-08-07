@@ -3,12 +3,13 @@ from pathlib import Path
 from typing import List, Dict, Union
 from extractor.base import DocstringExtractor
 from logger import logger 
+from datamodels import Docstring
 
 
 def collect_all_docstrings_in_project(
     root_dir: Union[str, Path],
-    extractors: List["DocstringExtractor"]
-) -> List[Dict]:
+    extractors: List[DocstringExtractor]
+) -> List[Docstring]:
     """
     Walks through a project directory and extracts docstrings using all supported language extractors.
 
@@ -17,10 +18,10 @@ def collect_all_docstrings_in_project(
         extractors (List[DocstringExtractor]): A list of extractors for different languages.
 
     Returns:
-        list of dicts with keys: 'file', 'parent', 'name', 'type', 'docstring'
+        List[Docstring]: Extracted docstrings with optional file information.
     """
     root_dir = Path(root_dir)
-    all_docs: List[Dict] = []
+    all_docs: List[Docstring] = []
 
     suffix_to_extractor = {
         suffix: extractor
@@ -34,14 +35,10 @@ def collect_all_docstrings_in_project(
             try:
                 code = file_path.read_text(encoding="utf8")
                 docstring_objs = extractor.extract_docstrings(code)
+
                 for doc in docstring_objs:
-                    all_docs.append({
-                        "file": str(file_path),
-                        "parent": doc.parent,
-                        "name": doc.name,
-                        "type": doc.type,
-                        "docstring": doc.docstring
-                    })
+                    doc.file = str(file_path)  # Inject file path here
+                    all_docs.append(doc)
             except Exception as e:
                 logger.warning(f"Failed to parse {file_path}: {e}")
 
@@ -52,7 +49,7 @@ def collect_all_docstrings_in_project(
 def collect_docstrings_in_project(
     root_dir: Union[str, Path],
     extractor: "DocstringExtractor"
-) -> List[Dict]:
+) -> List[Docstring]:
     """
     Walks through a project directory and extracts docstrings using the provided extractor.
 
@@ -61,24 +58,20 @@ def collect_docstrings_in_project(
         extractor (DocstringExtractor): An instance of a concrete extractor.
 
     Returns:
-        list of dicts with keys: 'file', 'parent', 'name', 'type', 'docstring'
+        List[Docstring]: Extracted docstrings with optional file information.
     """
     root_dir = Path(root_dir)
-    all_docs: List[Dict] = []
+    all_docs: List[Docstring] = []
 
     for file_path in root_dir.rglob("*"):
         if file_path.suffix in extractor.suffix:
             try:
                 code = file_path.read_text(encoding="utf8")
                 docstring_objs = extractor.extract_docstrings(code)
+
                 for doc in docstring_objs:
-                    all_docs.append({
-                        "file": str(file_path),
-                        "parent": doc.parent,
-                        "name": doc.name,
-                        "type": doc.type,
-                        "docstring": doc.docstring
-                    })
+                    doc.file = str(file_path)
+                    all_docs.append(doc)
             except Exception as e:
                 logger.warning(f"Failed to parse {file_path}: {e}")
 
@@ -87,23 +80,26 @@ def collect_docstrings_in_project(
 
 
 def save_docstrings_to_json(
-    docstrings: List[Dict],
+    docstrings: List[Docstring],
     output_path: Union[str, Path]
 ):
     """
     Saves extracted docstrings to a JSON file.
 
     Args:
-        docstrings (list of dicts): Output from `collect_docstrings_in_project`
+        docstrings (List[Docstring]): Output from `collect_docstrings_in_project`
         output_path (str | Path): Where to write the JSON file
     """
     output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)  # Create parent directories if needed
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    output_path.write_text(json.dumps(docstrings, indent=2), encoding="utf8")
+    json_data = [doc.model_dump() for doc in docstrings]
+    output_path.write_text(json.dumps(json_data, indent=2), encoding="utf8")
+
     logger.info(f"Saved {len(docstrings)} docstrings to {output_path}")
-    
-    
+
+
+## TODO: Needs to be changed to accept Symbol type
 def save_symbols_to_json(
     symbols: List[Dict],
     output_path: Union[str, Path]

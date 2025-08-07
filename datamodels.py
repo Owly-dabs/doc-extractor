@@ -6,6 +6,7 @@ class Symbol(BaseModel):
     type: str  # "function", "class", etc.
 
 class Docstring(BaseModel):
+    file: str | None = None
     name: str
     parent: str | None = None
     type: str
