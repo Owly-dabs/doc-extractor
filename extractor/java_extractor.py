@@ -1,7 +1,7 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
-from datamodels import Docstring
+from datamodels import Docstring, Symbol
 
 
 class JavaDocstringExtractor(DocstringExtractor):
@@ -117,3 +117,95 @@ class JavaDocstringExtractor(DocstringExtractor):
 
         traverse(root_node)
         return docstrings
+
+    def extract_used_symbols(self, code: str) -> List[Symbol]:
+        """
+        Extracts usage of symbols that would be documented by extract_docstrings.
+        Focuses on classes, interfaces, methods, constructors, and fields.
+        
+        Args:
+            code (str): The Java source code
+            
+        Returns:
+            List[Symbol]: List of used symbols with name, parent, and type
+        """
+        tree = self.parser.parse(code.encode("utf8"))
+        root = tree.root_node
+        used: List[Symbol] = []
+
+        def get_node_text(node):
+            return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
+
+        def walk(node, current_class=None):
+            # Method calls: obj.method(), Class.staticMethod()
+            if node.type == "method_invocation":
+                # Handle instance methods: obj.method()
+                if node.child_by_field_name("object"):
+                    object_node = node.child_by_field_name("object")
+                    method_node = node.child_by_field_name("name")
+                    if object_node and method_node:
+                        parent = get_node_text(object_node)
+                        name = get_node_text(method_node)
+                        used.append(Symbol(
+                            name=name,
+                            parent=parent,
+                            type="method"
+                        ))
+                # Handle static methods: Class.method()
+                else:
+                    method_node = node.child_by_field_name("name")
+                    if method_node:
+                        used.append(Symbol(
+                            name=get_node_text(method_node),
+                            parent=None,
+                            type="method"
+                        ))
+            
+            # Constructor calls: new Class()
+            elif node.type == "object_creation_expression":
+                type_node = node.child_by_field_name("type")
+                if type_node:
+                    used.append(Symbol(
+                        name=get_node_text(type_node),
+                        parent=None,
+                        type="constructor"
+                    ))
+            
+            # Field access: obj.field, Class.staticField
+            elif node.type == "field_access":
+                object_node = node.child_by_field_name("object")
+                field_node = node.child_by_field_name("field")
+                if object_node and field_node:
+                    parent = get_node_text(object_node)
+                    name = get_node_text(field_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=parent,
+                        type="field"
+                    ))
+            
+            # Class references (as types): Class var
+            elif node.type == "type_identifier" and node.parent.type not in [
+                "class_declaration", 
+                "interface_declaration",
+                "method_declaration",
+                "constructor_declaration"
+            ]:
+                used.append(Symbol(
+                    name=get_node_text(node),
+                    parent=None,
+                    type="class"
+                ))
+            
+            # Track current class context for inner class references
+            if node.type == "class_declaration":
+                class_name_node = node.child_by_field_name("name")
+                if class_name_node:
+                    current_class = get_node_text(class_name_node)
+            
+            # Recurse through children
+            for child in node.children:
+                walk(child, current_class)
+
+        walk(root)
+        return used

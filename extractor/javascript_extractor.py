@@ -1,7 +1,7 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
-from datamodels import Docstring
+from datamodels import Docstring, Symbol
 
 
 class JavaScriptDocstringExtractor(DocstringExtractor):
@@ -158,3 +158,72 @@ class JavaScriptDocstringExtractor(DocstringExtractor):
 
         traverse(root_node)
         return docstrings
+
+
+    def extract_used_symbols(self, code: str) -> List[Symbol]:
+        """
+        Extracts used symbols (functions, methods, classes) from a TypeScript code snippet.
+
+        This method identifies identifiers and member expressions used in function calls,
+        constructor calls, and method invocations, and returns them as `Symbol` objects.
+
+        Args:
+            code (str): The TypeScript source code.
+
+        Returns:
+            List[Symbol]: A list of used symbols with name, parent, and type.
+        """
+        tree = self.parser.parse(code.encode("utf8"))
+        root = tree.root_node
+        used: List[Symbol] = []
+
+        def get_node_text(node):
+            return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
+
+        def walk(node):
+            # function or method call: foo(), obj.method()
+            if node.type == "call_expression":
+                fn_node = node.child_by_field_name("function")
+
+                if fn_node is None:
+                    return
+
+                if fn_node.type == "member_expression":
+                    object_node = fn_node.child_by_field_name("object")
+                    property_node = fn_node.child_by_field_name("property")
+
+                    if object_node and property_node:
+                        parent = get_node_text(object_node)
+                        name = get_node_text(property_node)
+                        used.append(Symbol(
+                            name=name,
+                            parent=parent,
+                            type="method"
+                        ))
+
+                elif fn_node.type == "identifier":
+                    name = get_node_text(fn_node)
+                    # Simple heuristic: Capitalized = class constructor
+                    symbol_type = "class" if name and name[0].isupper() else "function"
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type=symbol_type
+                    ))
+
+            # constructor usage: new Foo()
+            elif node.type == "new_expression":
+                constructor_node = node.child_by_field_name("constructor")
+                if constructor_node and constructor_node.type == "identifier":
+                    name = get_node_text(constructor_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="class"
+                    ))
+
+            for child in node.children:
+                walk(child)
+
+        walk(root)
+        return used

@@ -1,7 +1,7 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
-from datamodels import Docstring
+from datamodels import Docstring, Symbol
 
 
 class CppDocstringExtractor(DocstringExtractor):
@@ -56,7 +56,7 @@ class CppDocstringExtractor(DocstringExtractor):
                 text = get_node_text(prev)
 
                 if prev.type == "comment":
-                    if text.startswith("/**") or text.startswith("/*!"):
+                    if text.startswith("/*"):
                         return text
                     elif text.startswith("//"):
                         collected.insert(0, text)
@@ -74,7 +74,7 @@ class CppDocstringExtractor(DocstringExtractor):
 
         def get_node_name(node):
             """Recursively find the first identifier-like name in a node's subtree."""
-            if node.type in ["identifier", "field_identifier", "type_identifier"]:
+            if node.type in ["identifier", "field_identifier", "type_identifier", "namespace_identifier"]:
                 return get_node_text(node)
 
             for child in node.children:
@@ -88,8 +88,35 @@ class CppDocstringExtractor(DocstringExtractor):
             if parent_stack is None:
                 parent_stack = []
 
-            is_parent_scope = node.type in ["class_specifier", "struct_specifier"]
-
+            is_parent_scope = node.type in ["class_specifier", "struct_specifier", "namespace_definition"]
+            
+            # Handle namespace aliases (they have different structure)
+            if node.type == "namespace_alias":
+                doc = extract_leading_doc_comment(node)
+                name = get_node_name(node)
+                if doc:
+                    docstrings.append(Docstring(
+                        name=name,
+                        type="namespace",
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
+            
+            # Handle namespace definitions
+            elif node.type == "namespace_definition":
+                doc = extract_leading_doc_comment(node)
+                name = get_node_name(node)
+                if doc:
+                    docstrings.append(Docstring(
+                        name=name,
+                        type="namespace",
+                        parent=parent_stack[-1] if parent_stack else None,
+                        docstring=doc
+                    ))
+                
+                # Add to parent stack before traversing children
+                parent_stack.append(name)
+                
             if node.type in [
                 "function_definition",
                 "declaration",
@@ -118,3 +145,119 @@ class CppDocstringExtractor(DocstringExtractor):
 
         traverse(root_node)
         return docstrings
+
+    def extract_used_symbols(self, code: str) -> List[Symbol]:
+        """
+        Extracts used symbols (functions, methods, classes, namespaces) from C++ code.
+        
+        Identifies:
+        - Function calls (including namespace-qualified)
+        - Method calls (member functions)
+        - Class instantiations (via new or constructor calls)
+        - Template instantiations
+        - Namespace usage
+        
+        Args:
+            code (str): The C++ source code
+            
+        Returns:
+            List[Symbol]: List of used symbols with name, parent, and type
+        """
+        tree = self.parser.parse(code.encode("utf8"))
+        root = tree.root_node
+        used: List[Symbol] = []
+
+        def get_node_text(node):
+            return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
+
+        def walk(node):
+            # Function calls: foo(), std::cout()
+            if node.type == "call_expression":
+                fn_node = node.child_by_field_name("function")
+                
+                if fn_node is None:
+                    return
+                    
+                # Handle namespace/class qualified calls (std::string, Foo::bar)
+                if fn_node.type == "qualified_identifier":
+                    parts = []
+                    current = fn_node
+                    while current.type == "qualified_identifier":
+                        parts.insert(0, get_node_text(current.child_by_field_name("name")))
+                        current = current.child_by_field_name("scope")
+                    
+                    if len(parts) > 1:
+                        used.append(Symbol(
+                            name=parts[-1],
+                            parent="::".join(parts[:-1]),
+                            type="function" if parts[-1][0].islower() else "method"
+                        ))
+                    else:
+                        used.append(Symbol(
+                            name=parts[0],
+                            parent=None,
+                            type="function"
+                        ))
+                
+                # Regular function calls
+                elif fn_node.type == "identifier":
+                    name = get_node_text(fn_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="function"
+                    ))
+            
+            # Method calls: obj.method(), ptr->method()
+            elif node.type == "field_expression":
+                object_node = node.child_by_field_name("argument")
+                field_node = node.child_by_field_name("field")
+                
+                if object_node and field_node:
+                    parent = get_node_text(object_node)
+                    name = get_node_text(field_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=parent,
+                        type="function"
+                    ))
+            
+            # Constructor calls: Foo(), new Foo()
+            elif node.type in ["new_expression", "constructor_init"]:
+                type_node = node.child_by_field_name("type")
+                if type_node:
+                    name = get_node_text(type_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="class"
+                    ))
+            
+            # Template instantiations: std::vector<int>
+            elif node.type == "template_type":
+                type_node = node.child_by_field_name("name")
+                if type_node:
+                    name = get_node_text(type_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="template"
+                    ))
+            
+            # Using declarations: using namespace std;
+            elif node.type == "using_declaration":
+                name_node = node.child_by_field_name("name")
+                if name_node:
+                    name = get_node_text(name_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="namespace"
+                    ))
+            
+            # Recurse through children
+            for child in node.children:
+                walk(child)
+
+        walk(root)
+        return used

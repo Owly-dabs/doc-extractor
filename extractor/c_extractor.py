@@ -1,7 +1,7 @@
 from tree_sitter_languages import get_parser
 from typing import List, Dict
 from .base import DocstringExtractor
-from datamodels import Docstring
+from datamodels import Docstring, Symbol
 
 
 class CDocstringExtractor(DocstringExtractor):
@@ -131,3 +131,87 @@ class CDocstringExtractor(DocstringExtractor):
 
         traverse(root_node)
         return docstrings
+
+    def extract_used_symbols(self, code: str) -> List[Symbol]:
+        """
+        Extracts usage of symbols that would be documented by extract_docstrings.
+        Focuses on functions, structs, typedefs, and their members.
+        
+        Args:
+            code (str): The C source code
+            
+        Returns:
+            List[Symbol]: List of used symbols with name, parent, and type
+        """
+        tree = self.parser.parse(code.encode("utf8"))
+        root = tree.root_node
+        used: List[Symbol] = []
+
+        def get_node_text(node):
+            return code.encode("utf8")[node.start_byte:node.end_byte].decode("utf8").strip()
+
+        def walk(node):
+            # Function calls - matches function_definition in docstrings
+            if node.type == "call_expression":
+                fn_node = node.child_by_field_name("function")
+                if fn_node and fn_node.type == "identifier":
+                    name = get_node_text(fn_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="function"
+                    ))
+            
+            # Struct usage - matches struct_specifier in docstrings
+            elif node.type == "struct_specifier":
+                # Only count when used as type (not definitions)
+                if node.parent and node.parent.type not in ["type_definition", "field_declaration"]:
+                    name = get_node_text(node.child_by_field_name("name"))
+                    if name:
+                        used.append(Symbol(
+                            name=name,
+                            parent=None,
+                            type="struct"
+                        ))
+            
+            # Typedef usage - matches type_definition/typedef_definition in docstrings
+            elif node.type == "type_identifier":
+                # Skip if part of a declaration/definition
+                if node.parent.type not in ["type_definition", "typedef_definition", "field_declaration"]:
+                    name = get_node_text(node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="typedef"
+                    ))
+            
+            # Struct member access - matches field_declaration in docstrings
+            elif node.type == "field_expression":
+                field_node = node.child_by_field_name("field")
+                parent_node = node.child_by_field_name("argument")
+                if field_node and parent_node:
+                    parent = get_node_text(parent_node)
+                    name = get_node_text(field_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=parent,
+                        type="field"
+                    ))
+            
+            # Function pointer calls
+            elif node.type == "pointer_expression" and node.parent.type == "call_expression":
+                ptr_node = node.child_by_field_name("argument")
+                if ptr_node and ptr_node.type == "identifier":
+                    name = get_node_text(ptr_node)
+                    used.append(Symbol(
+                        name=name,
+                        parent=None,
+                        type="function_pointer"
+                    ))
+
+            # Recurse through children
+            for child in node.children:
+                walk(child)
+
+        walk(root)
+        return used
